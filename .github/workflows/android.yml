@@ -24,26 +24,48 @@ jobs:
         with:
           fetch-depth: '0'
 
+      - name: Cache pip (Meson/Ninja)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-meson-ninja-v1
+
       - name: Install build tools
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends pkg-config python3-pip
           python3 -m pip install --upgrade meson ninja
 
+      - name: Cache Android NDK
+        id: ndk-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/android-ndk-${{ env.NDK_VERSION }}
+          key: android-ndk-${{ env.NDK_VERSION }}
+
       - name: Install Android NDK
+        if: steps.ndk-cache.outputs.cache-hit != 'true'
         run: |
           ndk_zip="android-ndk-${NDK_VERSION}-linux.zip"
           wget -q "https://dl.google.com/android/repository/${ndk_zip}"
           unzip -q "${ndk_zip}"
-          echo "NDK=${PWD}/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Locate Android NDK
+        run: echo "NDK=${PWD}/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Cache Meson WrapDB subprojects
+        id: wraps-cache
+        uses: actions/cache@v4
+        with:
+          path: subprojects
+          key: meson-wraps-v1-freetype2-fribidi-harfbuzz-libunibreak
 
       - name: Install dependency wraps
         run: |
           mkdir -p subprojects
-          meson wrap install freetype2
-          meson wrap install fribidi
-          meson wrap install harfbuzz
-          meson wrap install libunibreak
+          for w in freetype2 fribidi harfbuzz libunibreak; do
+            [ -f "subprojects/${w}.wrap" ] || meson wrap install "$w"
+          done
 
       - name: Generate Meson cross-file
         run: |
