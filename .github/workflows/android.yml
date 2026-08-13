@@ -50,6 +50,7 @@ jobs:
           TOOLCHAIN="${NDK}/toolchains/llvm/prebuilt/linux-x86_64"
           SYSROOT="${TOOLCHAIN}/sysroot"
           CC="${TOOLCHAIN}/bin/clang"
+          CXX="${TOOLCHAIN}/bin/clang++"
           AR="${TOOLCHAIN}/bin/llvm-ar"
           STRIP="${TOOLCHAIN}/bin/llvm-strip"
           case "${{ matrix.abi }}" in
@@ -65,6 +66,7 @@ jobs:
           {
             echo "[binaries]"
             echo "c = '${CC}'"
+            echo "cpp = '${CXX}'"
             echo "ar = '${AR}'"
             echo "strip = '${STRIP}'"
             echo ""
@@ -74,7 +76,17 @@ jobs:
               printf ", %s" "${EXTRA_CSV}"
             fi
             printf "]\n"
+            printf "cpp_args = ['--target=${TARGET}', '--sysroot=${SYSROOT}'"
+            if [ -n "${EXTRA_CSV}" ]; then
+              printf ", %s" "${EXTRA_CSV}"
+            fi
+            printf "]\n"
             printf "c_link_args = ['--target=${TARGET}', '--sysroot=${SYSROOT}'"
+            if [ -n "${EXTRA_CSV}" ]; then
+              printf ", %s" "${EXTRA_CSV}"
+            fi
+            printf "]\n"
+            printf "cpp_link_args = ['--target=${TARGET}', '--sysroot=${SYSROOT}'"
             if [ -n "${EXTRA_CSV}" ]; then
               printf ", %s" "${EXTRA_CSV}"
             fi
@@ -110,24 +122,28 @@ jobs:
         run: |
           TOOLCHAIN="${NDK}/toolchains/llvm/prebuilt/linux-x86_64"
           SYSROOT="${TOOLCHAIN}/sysroot"
-          CC="${TOOLCHAIN}/bin/clang"
+          CXX="${TOOLCHAIN}/bin/clang++"
           case "${{ matrix.abi }}" in
             arm64-v8a)      TARGET="aarch64-linux-android${API}" ;;
             armeabi-v7a)    TARGET="armv7a-linux-androideabi${API}" ;;
           esac
           OUT="dist/lib/${{ matrix.abi }}/libass.so"
           mkdir -p "$(dirname "$OUT")"
-          mapfile -t LIBS < <(find build \
-            \( -name 'libass.a' -o -name 'libfreetype.a' -o -name 'libfribidi.a' \
+          LIBASS=$(find build -name 'libass.a' | sort -u | head -n1)
+          mapfile -t DEPS < <(find build \
+            \( -name 'libfreetype.a' -o -name 'libfribidi.a' \
                -o -name 'libharfbuzz.a' -o -name 'libunibreak.a' -o -name 'libunibreak*.a' \
                -o -name 'libz.a' \) | sort -u)
-          echo "Archives:"; printf '  %s\n' "${LIBS[@]}"
-          "$CC" --target="${TARGET}" --sysroot="${SYSROOT}" -shared \
+          echo "libass: ${LIBASS}"; echo "deps:"; printf '  %s\n' "${DEPS[@]}"
+          "$CXX" --target="${TARGET}" --sysroot="${SYSROOT}" -shared -static-libstdc++ \
             -Wl,-soname,libass.so \
-            -Wl,--whole-archive -Wl,--start-group "${LIBS[@]}" -Wl,--end-group -Wl,--no-whole-archive \
+            -Wl,--whole-archive "${LIBASS}" -Wl,--no-whole-archive \
+            -Wl,--start-group "${DEPS[@]}" -Wl,--end-group \
             -lm -o "$OUT"
           "${TOOLCHAIN}/bin/llvm-strip" --strip-all --remove-section=.comment --remove-section=.note "$OUT"
           ls -lh "$OUT"
+          echo "--- Needed libs ---"
+          "${TOOLCHAIN}/bin/llvm-readelf" -d "$OUT" | grep NEEDED || true
 
       - name: Upload per-ABI artifact
         uses: actions/upload-artifact@v4
