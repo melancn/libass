@@ -62,7 +62,8 @@ jobs:
               CPU_FAMILY="arm"; CPU="armv7"
               EXTRA=('-mthumb' '-mfpu=neon' '-mfloat-abi=softfp' '-march=armv7-a') ;;
           esac
-          EXTRA_CSV=$(IFS=, ; printf '%s\n' "${EXTRA[*]}")
+          EXTRA_QUOTED=""
+          for f in "${EXTRA[@]}"; do EXTRA_QUOTED="${EXTRA_QUOTED}, '${f}'"; done
           {
             echo "[binaries]"
             echo "c = '${CC}'"
@@ -71,26 +72,10 @@ jobs:
             echo "strip = '${STRIP}'"
             echo ""
             echo "[built-in options]"
-            printf "c_args = ['--target=${TARGET}', '--sysroot=${SYSROOT}'"
-            if [ -n "${EXTRA_CSV}" ]; then
-              printf ", %s" "${EXTRA_CSV}"
-            fi
-            printf "]\n"
-            printf "cpp_args = ['--target=${TARGET}', '--sysroot=${SYSROOT}'"
-            if [ -n "${EXTRA_CSV}" ]; then
-              printf ", %s" "${EXTRA_CSV}"
-            fi
-            printf "]\n"
-            printf "c_link_args = ['--target=${TARGET}', '--sysroot=${SYSROOT}'"
-            if [ -n "${EXTRA_CSV}" ]; then
-              printf ", %s" "${EXTRA_CSV}"
-            fi
-            printf "]\n"
-            printf "cpp_link_args = ['--target=${TARGET}', '--sysroot=${SYSROOT}'"
-            if [ -n "${EXTRA_CSV}" ]; then
-              printf ", %s" "${EXTRA_CSV}"
-            fi
-            printf "]\n"
+            printf "c_args = ['--target=${TARGET}', '--sysroot=${SYSROOT}'%s]\n" "${EXTRA_QUOTED}"
+            printf "cpp_args = ['--target=${TARGET}', '--sysroot=${SYSROOT}'%s]\n" "${EXTRA_QUOTED}"
+            printf "c_link_args = ['--target=${TARGET}', '--sysroot=${SYSROOT}'%s]\n" "${EXTRA_QUOTED}"
+            printf "cpp_link_args = ['--target=${TARGET}', '--sysroot=${SYSROOT}'%s]\n" "${EXTRA_QUOTED}"
             echo "b_staticpic = true"
             echo ""
             echo "[host_machine]"
