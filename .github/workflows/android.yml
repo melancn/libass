@@ -120,7 +120,8 @@ jobs:
             -Dharfbuzz:freetype=disabled -Dharfbuzz:cairo=disabled \
             -Dharfbuzz:gobject=disabled \
             -Dfreetype2:bzip2=disabled -Dfreetype2:png=disabled \
-            -Dfreetype2:harfbuzz=disabled -Dfreetype2:brotli=disabled
+            -Dfreetype2:harfbuzz=disabled -Dfreetype2:brotli=disabled \
+            -Djni=enabled
 
       - name: Build
         run: meson compile -C build
@@ -152,11 +153,41 @@ jobs:
           echo "--- Needed libs ---"
           "${TOOLCHAIN}/bin/llvm-readelf" -d "$OUT" | grep NEEDED || true
 
+      - name: Link combined libass_jni.so
+        run: |
+          TOOLCHAIN="${NDK}/toolchains/llvm/prebuilt/linux-x86_64"
+          SYSROOT="${TOOLCHAIN}/sysroot"
+          CXX="${TOOLCHAIN}/bin/clang++"
+          case "${{ matrix.abi }}" in
+            arm64-v8a)      TARGET="aarch64-linux-android${API}" ;;
+            armeabi-v7a)    TARGET="armv7a-linux-androideabi${API}" ;;
+          esac
+          OUT="dist/lib/${{ matrix.abi }}/libass_jni.so"
+          mkdir -p "$(dirname "$OUT")"
+          ASSJNI=$(find build -name 'libass_jni.a' | sort -u | head -n1)
+          LIBASS=$(find build -name 'libass.a' | sort -u | head -n1)
+          mapfile -t DEPS < <(find build \
+            \( -name 'libfreetype.a' -o -name 'libfribidi.a' \
+               -o -name 'libharfbuzz.a' -o -name 'libunibreak.a' -o -name 'libunibreak*.a' \
+               -o -name 'libz.a' \) | sort -u)
+          echo "ass_jni: ${ASSJNI}"; echo "libass: ${LIBASS}"; printf '  dep %s\n' "${DEPS[@]}"
+          "$CXX" --target="${TARGET}" --sysroot="${SYSROOT}" -shared -static-libstdc++ \
+            -Wl,-soname,libass_jni.so \
+            -Wl,--whole-archive "${ASSJNI}" -Wl,--no-whole-archive \
+            -Wl,--start-group "${LIBASS}" "${DEPS[@]}" -Wl,--end-group \
+            -lm -o "$OUT"
+          "${TOOLCHAIN}/bin/llvm-strip" --strip-all --remove-section=.comment --remove-section=.note "$OUT"
+          ls -lh "$OUT"
+          echo "--- Needed libs ---"
+          "${TOOLCHAIN}/bin/llvm-readelf" -d "$OUT" | grep NEEDED || true
+          echo "--- Exported JNI symbols (sample) ---"
+          "${TOOLCHAIN}/bin/llvm-nm" -D "$OUT" | grep 'Java_com_libass' | head -n 20
+
       - name: Upload per-ABI artifact
         uses: actions/upload-artifact@v4
         with:
           name: libass-android-${{ matrix.abi }}
-          path: dist/lib/${{ matrix.abi }}/libass.so
+          path: dist/lib/${{ matrix.abi }}/*.so
           if-no-files-found: error
 
   bundle:
@@ -168,12 +199,12 @@ jobs:
         with:
           path: dist
       - name: Show tree
-        run: find dist -name 'libass.so' | sort
+        run: find dist -name '*.so' | sort
       - name: Upload combined artifact
         uses: actions/upload-artifact@v4
         with:
           name: libass-android-so
-          path: dist/**/libass.so
+          path: dist/**/*.so
           if-no-files-found: error
 
   release:
@@ -191,10 +222,10 @@ jobs:
       - name: Zip
         run: |
           mkdir -p staging/lib
-          find dist -name 'libass.so' | while read -r f; do
+          find dist -name '*.so' | while read -r f; do
             abi=$(basename "$(dirname "$f")")
             mkdir -p "staging/lib/$abi"
-            cp "$f" "staging/lib/$abi/libass.so"
+            cp "$f" "staging/lib/$abi/$(basename "$f")"
           done
           (cd staging && zip -r "../libass-android-${GITHUB_REF_NAME}.zip" lib)
       - uses: softprops/action-gh-release@v2

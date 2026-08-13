@@ -382,6 +382,10 @@ incs = include_directories('.', 'libass')
 
 subdir('libass')
 
+if get_option('jni').allowed()
+    subdir('jni')
+endif
+
 default_library = get_option('default_library')
 
 if default_library == 'both'
