@@ -1,0 +1,180 @@
+name: Android (NDK .so)
+
+on:
+  push:
+    branches: [ master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.abi }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [ arm64-v8a, armeabi-v7a ]
+    env:
+      NDK_VERSION: r27c
+      API: '21'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: '0'
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config python3-pip
+          python3 -m pip install --upgrade meson ninja
+
+      - name: Install Android NDK
+        run: |
+          ndk_zip="android-ndk-${NDK_VERSION}-linux.zip"
+          wget -q "https://dl.google.com/android/repository/${ndk_zip}"
+          unzip -q "${ndk_zip}"
+          echo "NDK=${PWD}/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Install dependency wraps
+        run: |
+          mkdir -p subprojects
+          meson wrap install freetype2
+          meson wrap install fribidi
+          meson wrap install harfbuzz
+          meson wrap install libunibreak
+
+      - name: Generate Meson cross-file
+        run: |
+          TOOLCHAIN="${NDK}/toolchains/llvm/prebuilt/linux-x86_64"
+          SYSROOT="${TOOLCHAIN}/sysroot"
+          CC="${TOOLCHAIN}/bin/clang"
+          AR="${TOOLCHAIN}/bin/llvm-ar"
+          STRIP="${TOOLCHAIN}/bin/llvm-strip"
+          case "${{ matrix.abi }}" in
+            arm64-v8a)
+              TARGET="aarch64-linux-android${API}"
+              CPU_FAMILY="aarch64"; CPU="aarch64" ;;
+            armeabi-v7a)
+              TARGET="armv7a-linux-androideabi${API}"
+              CPU_FAMILY="arm"; CPU="armv7"
+              EXTRA=('-mthumb' '-mfpu=neon' '-mfloat-abi=softfp' '-march=armv7-a') ;;
+          esac
+          EXTRA_CSV=$(IFS=, ; printf '%s\n' "${EXTRA[*]}")
+          {
+            echo "[binaries]"
+            echo "c = '${CC}'"
+            echo "ar = '${AR}'"
+            echo "strip = '${STRIP}'"
+            echo ""
+            echo "[built-in options]"
+            printf "c_args = ['--target=${TARGET}', '--sysroot=${SYSROOT}'"
+            if [ -n "${EXTRA_CSV}" ]; then
+              printf ", %s" "${EXTRA_CSV}"
+            fi
+            printf "]\n"
+            printf "c_link_args = ['--target=${TARGET}', '--sysroot=${SYSROOT}'"
+            if [ -n "${EXTRA_CSV}" ]; then
+              printf ", %s" "${EXTRA_CSV}"
+            fi
+            printf "]\n"
+            echo "b_staticpic = true"
+            echo ""
+            echo "[host_machine]"
+            echo "system = 'android'"
+            echo "cpu_family = '${CPU_FAMILY}'"
+            echo "cpu = '${CPU}'"
+            echo "endian = 'little'"
+          } > cross.ini
+          cat cross.ini
+
+      - name: Configure
+        run: |
+          meson setup build --cross-file cross.ini --wrap-mode=nopromote \
+            -Ddefault_library=static -Db_staticpic=true \
+            -Dfontconfig=disabled -Drequire-system-font-provider=false \
+            -Dlibunibreak=enabled \
+            -Dtest=disabled -Dcompare=disabled -Dprofile=disabled \
+            -Dfuzz=disabled -Dcheckasm=disabled \
+            -Dharfbuzz:icu=disabled -Dharfbuzz:glib=disabled \
+            -Dharfbuzz:freetype=disabled -Dharfbuzz:cairo=disabled \
+            -Dharfbuzz:gobject=disabled \
+            -Dfreetype2:bzip2=disabled -Dfreetype2:png=disabled \
+            -Dfreetype2:harfbuzz=disabled -Dfreetype2:brotli=disabled
+
+      - name: Build
+        run: meson compile -C build
+
+      - name: Link combined libass.so
+        run: |
+          TOOLCHAIN="${NDK}/toolchains/llvm/prebuilt/linux-x86_64"
+          SYSROOT="${TOOLCHAIN}/sysroot"
+          CC="${TOOLCHAIN}/bin/clang"
+          case "${{ matrix.abi }}" in
+            arm64-v8a)      TARGET="aarch64-linux-android${API}" ;;
+            armeabi-v7a)    TARGET="armv7a-linux-androideabi${API}" ;;
+          esac
+          OUT="dist/lib/${{ matrix.abi }}/libass.so"
+          mkdir -p "$(dirname "$OUT")"
+          mapfile -t LIBS < <(find build \
+            \( -name 'libass.a' -o -name 'libfreetype.a' -o -name 'libfribidi.a' \
+               -o -name 'libharfbuzz.a' -o -name 'libunibreak.a' -o -name 'libunibreak*.a' \
+               -o -name 'libz.a' \) | sort -u)
+          echo "Archives:"; printf '  %s\n' "${LIBS[@]}"
+          "$CC" --target="${TARGET}" --sysroot="${SYSROOT}" -shared \
+            -Wl,-soname,libass.so \
+            -Wl,--whole-archive -Wl,--start-group "${LIBS[@]}" -Wl,--end-group -Wl,--no-whole-archive \
+            -lm -o "$OUT"
+          "${TOOLCHAIN}/bin/llvm-strip" --strip-all --remove-section=.comment --remove-section=.note "$OUT"
+          ls -lh "$OUT"
+
+      - name: Upload per-ABI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libass-android-${{ matrix.abi }}
+          path: dist/lib/${{ matrix.abi }}/libass.so
+          if-no-files-found: error
+
+  bundle:
+    name: Bundle all ABIs
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Show tree
+        run: find dist -name 'libass.so' | sort
+      - name: Upload combined artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libass-android-so
+          path: dist/**/libass.so
+          if-no-files-found: error
+
+  release:
+    name: Attach to Release
+    needs: bundle
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: libass-android-so
+          path: dist
+      - name: Zip
+        run: |
+          mkdir -p staging/lib
+          find dist -name 'libass.so' | while read -r f; do
+            abi=$(basename "$(dirname "$f")")
+            mkdir -p "staging/lib/$abi"
+            cp "$f" "staging/lib/$abi/libass.so"
+          done
+          (cd staging && zip -r "../libass-android-${GITHUB_REF_NAME}.zip" lib)
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: libass-android-${{ github.ref_name }}.zip
+          fail_on_unmatched_files: true
